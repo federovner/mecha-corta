@@ -1,0 +1,16 @@
+{
+  "name": "mecha-corta-online",
+  "version": "2.0.0",
+  "description": "Mecha Corta: arena de bombas multijugador en línea con bots",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
