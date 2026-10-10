@@ -10,7 +10,6 @@ const MC = require('./public/core.js');
 
 const PORT = process.env.PORT || 3000;
 const TICK = 1 / 30;            // paso de simulación
-const SNAP_EVERY = 2;           // 15 instantáneas por segundo
 const BETWEEN_S = 9;            // pausa entre rondas
 const CROWN_S = 15;             // pantalla de coronación
 const MAX_PLAYERS = 12;
@@ -104,7 +103,7 @@ function nextRound(r) {
     map: r.maps[k], seed: r.seeds[k], diff: r.cfg.diff, round: r.round, net: true,
     slots: r.slots.map(s => ({ name: s.name, color: s.color, human: !!s.sock, prof: s.prof })),
   });
-  r.state = 'playing'; r.tick = 0; r.evBuf = []; r.lastGrid = ''; r.lastPu = '';
+  r.state = 'playing'; r.tick = 0; r.evBuf = []; r.lastGrid = ''; r.lastPu = ''; r.ff = 1;
   for (const m of humansIn(r)) sendRound(r, m);
   broadcastLobby(r);
   startLoop(r);
@@ -170,14 +169,22 @@ function releaseSlot(r, m) {
   m.slot = -1;
 }
 
+// ---------- fast-forward (only while no human is still playing) ----------
+const FF = 4;
+function botsOnly(r) {
+  if (!r.G || !r.slots) return false;
+  return r.slots.every((s, k) => !s.sock || (!r.G.players[k].alive && r.G.players[k].lives <= 0));
+}
 // ---------- simulation loop ----------
 function startLoop(r) {
   stopLoop(r);
-  let last = process.hrtime.bigint(), acc = 0;
+  let last = process.hrtime.bigint(), acc = 0, lastSnap = 0n;
   r.loop = setInterval(() => {
     const now = process.hrtime.bigint();
-    acc += Number(now - last) / 1e9 * SPEED; last = now;
-    if (acc > 0.25 * SPEED) acc = 0.25 * SPEED;
+    if (r.ff > 1 && !botsOnly(r)) r.ff = 1;
+    const mult = SPEED * (r.ff || 1);
+    acc += Number(now - last) / 1e9 * mult; last = now;
+    if (acc > 0.25 * mult) acc = 0.25 * mult;
     while (acc >= TICK) {
       acc -= TICK;
       const G = r.G;
@@ -185,7 +192,9 @@ function startLoop(r) {
       MC.setG(G);
       MC.step(TICK);
       if (G.ev.length) { r.evBuf.push(...G.ev); G.ev.length = 0; }
-      if (++r.tick % SNAP_EVERY === 0 || G.done) sendSnap(r);
+      ++r.tick;
+      const t = process.hrtime.bigint();
+      if (t - lastSnap >= 62000000n || G.done) { lastSnap = t; sendSnap(r); }
       if (G.done && r.state === 'playing') { endOfRound(r); return; }
     }
   }, 1000 * TICK / 2);
@@ -198,7 +207,7 @@ function gridStr(G) { let s = ''; for (let i = 0; i < G.N; i++) s += G.grid[i]; 
 function puStr(G) { let s = ''; for (let i = 0; i < G.N; i++) s += G.pu[i]; return s; }
 function sendSnap(r) {
   const G = r.G;
-  const s = { t: r3(G.time), cd: r2(G.countdown), sd: G.sudden ? 1 : 0, fi: G.fallIdx, ft: r3(G.fallTimer), et: r2(G.endT), w: G.winnerId };
+  const s = { r: r.ff || 1, bo: botsOnly(r) ? 1 : 0, t: r3(G.time), cd: r2(G.countdown), sd: G.sudden ? 1 : 0, fi: G.fallIdx, ft: r3(G.fallTimer), et: r2(G.endT), w: G.winnerId };
   const gs = gridStr(G); if (gs !== r.lastGrid) { s.g = gs; r.lastGrid = gs; }
   const us = puStr(G); if (us !== r.lastPu) { s.u = us; r.lastPu = us; }
   s.fl = []; s.br = [];
@@ -276,6 +285,11 @@ io.on('connection', sock => {
         inp.q.push([seq, d, Math.min(t, 0.05), b]);
       }
     });
+  });
+
+  sock.on('ff', () => {
+    const r = room; if (!r || r.state !== 'playing' || !botsOnly(r)) return;
+    r.ff = r.ff > 1 ? 1 : FF;
   });
 
   sock.on('leaveRoom', leave);
